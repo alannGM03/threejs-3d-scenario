@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>three.js webgl - FBX loader</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        #audioButton {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: #ff5722;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            transition: background-color 0.3s, transform 0.2s;
+        }
+
+        #audioButton:hover {
+            background-color: #e64a19;
+            transform: scale(1.05);
+        }
+
+        #audioButton:active {
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+
+<body>
+    <div id="info">
+        <a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> - FBXLoader<br />
+        Character and animation from <a href="https://www.mixamo.com/" target="_blank" rel="noopener">Mixamo</a>
+    </div>
+
+    <!-- Botón para controlar el audio -->
+    <button id="audioButton">Play Audio</button>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "../build/three.module.js",
+                "three/addons/": "./jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import Stats from 'three/addons/libs/stats.module.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+        import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+        import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { Audio, AudioListener, AudioLoader } from 'three';
+
+        const manager = new THREE.LoadingManager();
+        let camera, scene, renderer, stats, object, loader, guiMorphsFolder, sound, composer;
+        let mixer;
+        const clock = new THREE.Clock();
+        const params = { asset: 'Elbow', bloomStrength: 1.5, bloomRadius: 0.4, bloomThreshold: 0.85 };
+        const assets = ['Elbow', 'morph_test'];
+
+        init();
+
+        function init() {
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 2000);
+            camera.position.set(100, 200, 300);
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xa0a0a0);
+            scene.fog = new THREE.Fog(0xa0a0a0, 200, 1000);
+
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 5);
+            hemiLight.position.set(0, 200, 0);
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 5);
+            dirLight.position.set(0, 200, 100);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.top = 180;
+            dirLight.shadow.camera.bottom = -100;
+            dirLight.shadow.camera.left = -120;
+            dirLight.shadow.camera.right = 120;
+            scene.add(dirLight);
+
+            loader = new FBXLoader(manager);
+            loadAsset(params.asset);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setAnimationLoop(animate);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            const controls = new OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, 100, 0);
+            controls.update();
+
+            window.addEventListener('resize', onWindowResize);
+
+            stats = new Stats();
+            container.appendChild(stats.dom);
+
+            const gui = new GUI();
+            gui.add(params, 'asset', assets).onChange(value => loadAsset(value));
+
+            gui.add(params, 'bloomStrength', 0, 3).onChange(updateBloomSettings);
+            gui.add(params, 'bloomRadius', 0, 1).onChange(updateBloomSettings);
+            gui.add(params, 'bloomThreshold', 0, 1).onChange(updateBloomSettings);
+
+            guiMorphsFolder = gui.addFolder('Morphs').hide();
+
+            const rgbeLoader = new RGBELoader();
+            rgbeLoader.load('models/rgbe/red_boxing_ring_8k.hdr', function (texture) {
+                texture.mapping = THREE.EquirectangularReflectionMapping;
+                scene.background = texture;
+                scene.environment = texture;
+            });
+
+            // Post-processing
+            const renderPass = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderPass);
+            composer.addPass(bloomPass);
+
+            bloomPass.threshold = params.bloomThreshold;
+            bloomPass.strength = params.bloomStrength;
+            bloomPass.radius = params.bloomRadius;
+
+            function updateBloomSettings() {
+                bloomPass.threshold = params.bloomThreshold;
+                bloomPass.strength = params.bloomStrength;
+                bloomPass.radius = params.bloomRadius;
+            }
+
+            const listener = new AudioListener();
+            camera.add(listener);
+
+            sound = new Audio(listener);
+            const audioLoader = new AudioLoader();
+            audioLoader.load('models/rgbe/Rocky Balboa.mp3', function (buffer) {
+                sound.setBuffer(buffer);
+                sound.setLoop(true);
+                sound.setVolume(0.5);
+            });
+
+            document.getElementById('audioButton').addEventListener('click', () => {
+                if (sound.isPlaying) {
+                    sound.pause();
+                    document.getElementById('audioButton').innerText = 'Play Audio';
+                } else {
+                    sound.play();
+                    document.getElementById('audioButton').innerText = 'Pause Audio';
+                }
+            });
+        }
+
+        function loadAsset(asset) {
+            loader.load('models/fbx/' + asset + '.fbx', function (group) {
+                if (object) {
+                    object.traverse(function (child) {
+                        if (child.material) {
+                            const materials = Array.isArray(child.material) ? child.material : [child.material];
+                            materials.forEach(material => {
+                                if (material.map) material.map.dispose();
+                                material.dispose();
+                            });
+                        }
+                        if (child.geometry) child.geometry.dispose();
+                    });
+                    scene.remove(object);
+                }
+
+                object = group;
+
+                if (object.animations && object.animations.length) {
+                    mixer = new THREE.AnimationMixer(object);
+                    const action = mixer.clipAction(object.animations[0]);
+                    action.play();
+                } else {
+                    mixer = null;
+                }
+
+                guiMorphsFolder.children.forEach(child => child.destroy());
+                guiMorphsFolder.hide();
+
+                object.traverse(function (child) {
+                    if (child.isMesh) {
+                        child.material = new THREE.MeshStandardMaterial({
+                            color: 0x0099ff,
+                            metalness: 0.9,
+                            roughness: 0.2,
+                            opacity: 0.8,
+                            transparent: true
+                        });
+
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+
+                        if (child.morphTargetDictionary) {
+                            guiMorphsFolder.show();
+                            const meshFolder = guiMorphsFolder.addFolder(child.name || child.uuid);
+                            Object.keys(child.morphTargetDictionary).forEach(key => {
+                                meshFolder.add(child.morphTargetInfluences, child.morphTargetDictionary[key], 0, 1, 0.01);
+                            });
+                        }
+                    }
+                });
+
+                scene.add(object);
+            });
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            const delta = clock.getDelta();
+            if (mixer) mixer.update(delta);
+            composer.render();
+            stats.update();
+        }
+    </script>
+</body>
+</html>
